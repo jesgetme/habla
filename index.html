@@ -1,0 +1,1169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!--
+  Habla — Spanish speaking trainer (Speak-style, now multi-mode)
+  Version: v2.3 (standalone host build)
+  Last Modified: 2026-10-28
+  Changelog:
+    v2.2 — FIX: mic scoring is blocked inside Claude's artifact sandbox (no mic prompt possible).
+           Speak exercises now default to a clean listen→repeat→self-check inside the app, and
+           auto-enable real mic scoring only when run as a standalone hosted file (top-level window).
+           Graceful latch to self-check if a mic attempt is ever refused. Removes the "Mic blocked" nag.
+    v2.1 — FIX: restored missing </script> close tag that stopped all page JS from running
+           (no buttons worked). No feature changes.
+    v2.0 — added 5 features borrowed from the big apps: weak-words spaced-repetition Review
+           (Duolingo/Anki), daily goal + XP (Duolingo), conversation roleplay (Speak),
+           build-a-sentence word bank (Babbel), listening quiz (Pimsleur). Bottom nav + You tab.
+           Lesson sessions now mix speak / build / listen exercise types. v1 progress migrates.
+    v1.0 — initial build. Listen→repeat→score loop, beginner lessons, speech scoring w/ self-check
+           fallback, streak + progress in localStorage.
+  NOTE: file kept at habla-v1.0.html on purpose so the published artifact URL stays the same;
+        internal version is v2.0.
+-->
+<title>Habla</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root { padding: env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px); color-scheme: light; }
+html,body{margin:0;} body{font-family:"DM Sans",system-ui,sans-serif;font-size:14px;} img{max-width:100%;} [hidden]{display:none!important;}
+</style>
+<style>
+  /* Layout: phone app — sticky top bar, scrolling tab panels, fixed bottom nav; full-screen session overlay */
+  :root {
+    --bg: #fbf7f0;
+    --surface: #ffffff;
+    --surface-2: #f6f0e6;
+    --ink: #2b2522;
+    --ink-soft: #857a70;
+    --line: #ece4d8;
+    --accent: #e0572b;
+    --accent-ink: #ffffff;
+    --gold: #d99a2b;
+    --good: #2f9e56;
+    --warn: #d99a2b;
+    --bad: #cf4040;
+    --blue: #3a76b8;
+    --shadow: 0 1px 2px rgba(43,37,34,.06), 0 8px 24px rgba(43,37,34,.07);
+    color-scheme: light;
+    --f-display: "Fraunces", Georgia, serif;
+    --f-body: "DM Sans", system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1613; --surface: #241f1b; --surface-2: #2d2722;
+      --ink: #f1e9df; --ink-soft: #a89a8c; --line: #342c26;
+      --accent: #f26a3d; --accent-ink: #1a1613; --gold: #e7b155;
+      --good: #4fc37e; --warn: #e7b155; --bad: #e86a6a; --blue: #6aa0d8;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.4);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1613; --surface: #241f1b; --surface-2: #2d2722;
+    --ink: #f1e9df; --ink-soft: #a89a8c; --line: #342c26;
+    --accent: #f26a3d; --accent-ink: #1a1613; --gold: #e7b155;
+    --good: #4fc37e; --warn: #e7b155; --bad: #e86a6a; --blue: #6aa0d8;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.4);
+    color-scheme: dark;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: var(--f-body);
+    -webkit-font-smoothing: antialiased; line-height: 1.5;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0 0 auto;
+    height: env(safe-area-inset-top, 0px); z-index: 20; background: var(--surface);
+  }
+  * { box-sizing: border-box; }
+  button { font-family: inherit; cursor: pointer; }
+  .hidden { display: none !important; }
+
+  /* ---------- top bar ---------- */
+  .bar {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 15;
+    background: var(--surface); border-bottom: 1px solid var(--line);
+    padding-block: 12px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: flex; align-items: center; gap: 10px;
+  }
+  .brand { font-family: var(--f-display); font-weight: 600; font-size: 1.4rem; letter-spacing: -.01em; margin-right: auto; }
+  .brand .tilde { color: var(--accent); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-weight: 600; font-size: .9rem; padding: 5px 11px; border-radius: 999px;
+    font-variant-numeric: tabular-nums;
+  }
+  .pill.streak { background: color-mix(in srgb, var(--gold) 16%, transparent); color: var(--ink); }
+  .pill.xp { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--ink); }
+  .pill svg { width: 15px; height: 15px; }
+  .iconbtn {
+    width: 38px; height: 38px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink-soft); display: grid; place-items: center;
+  }
+  .iconbtn svg { width: 18px; height: 18px; }
+
+  /* ---------- main wrap ---------- */
+  .wrap {
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 18px;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    max-width: 560px; margin-inline: auto;
+  }
+
+  /* daily goal ring */
+  .goal-card {
+    display: flex; align-items: center; gap: 16px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 18px; padding: 16px; box-shadow: var(--shadow); margin-bottom: 20px;
+  }
+  .ring { flex: 0 0 auto; position: relative; width: 66px; height: 66px; }
+  .ring svg { transform: rotate(-90deg); width: 66px; height: 66px; }
+  .ring .bg { stroke: var(--line); }
+  .ring .fg { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .5s ease; }
+  .ring .lbl {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font-family: var(--f-display); font-weight: 600; font-size: .95rem; font-variant-numeric: tabular-nums;
+  }
+  .goal-txt { min-width: 0; }
+  .goal-txt .t { font-family: var(--f-display); font-weight: 600; font-size: 1.1rem; }
+  .goal-txt .d { font-size: .85rem; color: var(--ink-soft); }
+  .goal-txt .done { color: var(--good); font-weight: 600; }
+
+  .hero-line {
+    font-family: var(--f-display); font-weight: 500; font-size: 1.05rem;
+    color: var(--ink-soft); text-wrap: balance; margin-bottom: 14px;
+  }
+  .hero-line b { color: var(--ink); font-weight: 600; }
+
+  .sec-label {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--ink-soft); font-weight: 600; margin: 4px 2px 10px;
+  }
+
+  /* lesson / card lists */
+  .lessons { display: flex; flex-direction: column; gap: 11px; }
+  .lesson {
+    display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+    padding: 14px; box-shadow: var(--shadow); transition: transform .12s ease;
+  }
+  .lesson:active { transform: scale(.985); }
+  .lesson .em {
+    width: 46px; height: 46px; flex: 0 0 auto; border-radius: 13px;
+    display: grid; place-items: center; font-size: 1.5rem;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  .lesson.blue .em { background: color-mix(in srgb, var(--blue) 14%, transparent); }
+  .lesson .body { min-width: 0; flex: 1; }
+  .lesson .t { font-weight: 600; font-size: 1.02rem; font-family: var(--f-display); }
+  .lesson .d { font-size: .82rem; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lesson .meta { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+  .track { flex: 1; height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .track > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .4s ease; }
+  .pct { font-size: .72rem; color: var(--ink-soft); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+  .done-badge { flex: 0 0 auto; color: var(--good); display: grid; place-items: center; }
+  .done-badge svg { width: 20px; height: 20px; }
+  .chev { flex: 0 0 auto; color: var(--ink-soft); }
+  .chev svg { width: 18px; height: 18px; }
+
+  .big-cta {
+    width: 100%; border: none; border-radius: 18px; padding: 18px;
+    display: flex; align-items: center; gap: 14px; text-align: left;
+    background: var(--accent); color: var(--accent-ink);
+    box-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 35%, transparent);
+    margin-bottom: 10px;
+  }
+  .big-cta.flat { background: var(--surface); color: var(--ink); border: 1px solid var(--line); box-shadow: var(--shadow); }
+  .big-cta .em { font-size: 1.7rem; flex: 0 0 auto; }
+  .big-cta .body { flex: 1; min-width: 0; }
+  .big-cta .t { font-family: var(--f-display); font-weight: 600; font-size: 1.15rem; }
+  .big-cta .d { font-size: .85rem; opacity: .9; }
+  .big-cta:disabled { opacity: .55; box-shadow: none; }
+
+  .mic-note {
+    margin-top: 22px; font-size: .78rem; color: var(--ink-soft);
+    background: var(--surface); border: 1px dashed var(--line);
+    border-radius: 12px; padding: 11px 13px; text-wrap: pretty;
+  }
+
+  /* You tab */
+  .you-stats { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; margin-bottom: 22px; }
+  .you-stat { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; text-align: center; }
+  .you-stat .n { font-family: var(--f-display); font-weight: 600; font-size: 2rem; line-height: 1; font-variant-numeric: tabular-nums; }
+  .you-stat .l { font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-soft); margin-top: 6px; }
+  .setting-row {
+    display: flex; align-items: center; gap: 12px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-bottom: 11px;
+  }
+  .setting-row .t { font-weight: 600; flex: 1; }
+  .setting-row .d { font-size: .8rem; color: var(--ink-soft); }
+  .stepper { display: flex; align-items: center; gap: 10px; }
+  .stepper button { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink); font-size: 1.2rem; font-weight: 700; display: grid; place-items: center; }
+  .stepper .val { min-width: 34px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .danger-btn { width: 100%; border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--line)); background: var(--surface); color: var(--bad); border-radius: 14px; padding: 13px; font-weight: 600; margin-top: 8px; }
+
+  /* ---------- bottom nav ---------- */
+  .nav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 16;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-top: 1px solid var(--line);
+    display: flex; justify-content: space-around;
+    padding-top: 8px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(8px, env(safe-area-inset-left,0px));
+    padding-right: max(8px, env(safe-area-inset-right,0px));
+  }
+  .nav button {
+    background: none; border: none; color: var(--ink-soft);
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    font-size: .68rem; font-weight: 600; padding: 4px 14px; border-radius: 10px;
+  }
+  .nav button svg { width: 23px; height: 23px; }
+  .nav button.on { color: var(--accent); }
+  .nav button .badge {
+    position: absolute; transform: translate(14px,-6px);
+    background: var(--accent); color: var(--accent-ink);
+    font-size: .6rem; font-weight: 700; min-width: 16px; height: 16px;
+    border-radius: 999px; display: grid; place-items: center; padding: 0 4px;
+  }
+  .nav button { position: relative; }
+
+  /* ---------- session overlay (all exercise types) ---------- */
+  .session {
+    position: fixed; inset: 0; z-index: 30; background: var(--bg);
+    display: flex; flex-direction: column;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px);
+  }
+  .s-top { display: flex; align-items: center; gap: 12px; padding: 12px max(16px, env(safe-area-inset-left,0px)); }
+  .s-prog { flex: 1; height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .s-prog > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .35s ease; }
+  .s-count { font-size: .8rem; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .ghostbtn { background: none; border: none; color: var(--ink-soft); font-weight: 600; font-size: 1.1rem; padding: 4px 8px; }
+
+  .stage {
+    flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 16px;
+    padding: 8px max(20px, env(safe-area-inset-left,0px)); overflow-y: auto;
+  }
+  .ex-type {
+    align-self: center; font-size: .7rem; text-transform: uppercase; letter-spacing: .1em;
+    font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+    padding: 4px 11px; border-radius: 999px;
+  }
+  .prompt-en { text-align: center; color: var(--ink-soft); font-size: .95rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .prompt-es { text-align: center; font-family: var(--f-display); font-weight: 600; font-size: clamp(1.8rem, 8.5vw, 2.8rem); line-height: 1.12; letter-spacing: -.015em; text-wrap: balance; }
+  .prompt-es .w { transition: color .2s ease; padding: 0 1px; border-radius: 4px; }
+  .prompt-es .w.hit { color: var(--good); }
+  .prompt-es .w.miss { color: var(--bad); }
+  .phon { text-align: center; color: var(--ink-soft); font-style: italic; font-size: 1.02rem; }
+  .phon b { color: var(--accent); font-style: normal; font-weight: 600; }
+
+  .hear-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .hear {
+    display: inline-flex; align-items: center; gap: 9px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink); border-radius: 999px; padding: 10px 18px;
+    font-weight: 600; font-size: .92rem; box-shadow: var(--shadow);
+  }
+  .hear svg { width: 17px; height: 17px; color: var(--accent); }
+  .hear.slow { opacity: .85; font-weight: 500; }
+
+  .feedback { text-align: center; min-height: 24px; font-weight: 600; font-size: 1.05rem; }
+  .feedback.good { color: var(--good); } .feedback.mid { color: var(--warn); } .feedback.bad { color: var(--bad); }
+  .heard { text-align: center; font-size: .85rem; color: var(--ink-soft); min-height: 18px; }
+  .heard b { color: var(--ink); }
+
+  /* quiz options */
+  .opts { display: flex; flex-direction: column; gap: 10px; max-width: 420px; width: 100%; margin: 0 auto; }
+  .opt {
+    width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 13px; padding: 15px 16px; font-weight: 600; font-size: 1rem; color: var(--ink);
+    transition: transform .1s ease;
+  }
+  .opt:active { transform: scale(.98); }
+  .opt.correct { border-color: var(--good); background: color-mix(in srgb, var(--good) 12%, var(--surface)); color: var(--ink); }
+  .opt.wrong { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, var(--surface)); }
+  .opt:disabled { cursor: default; }
+
+  /* build-a-sentence */
+  .answer-slot {
+    min-height: 58px; border: 1.5px dashed var(--line); border-radius: 13px;
+    padding: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start;
+    max-width: 440px; width: 100%; margin: 0 auto; background: var(--surface-2);
+  }
+  .answer-slot.ok { border-color: var(--good); border-style: solid; }
+  .answer-slot.no { border-color: var(--bad); border-style: solid; }
+  .bank { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 440px; width: 100%; margin: 0 auto; }
+  .chip {
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    border-radius: 11px; padding: 10px 14px; font-weight: 600; font-size: 1.02rem;
+    box-shadow: var(--shadow);
+  }
+  .chip.used { opacity: .35; pointer-events: none; }
+  .chip.placed { background: var(--accent); color: var(--accent-ink); border-color: transparent; box-shadow: none; }
+
+  /* conversation */
+  .convo { display: flex; flex-direction: column; gap: 12px; max-width: 460px; width: 100%; margin: 0 auto; }
+  .bubble { max-width: 82%; padding: 12px 15px; border-radius: 18px; box-shadow: var(--shadow); }
+  .bubble .es { font-family: var(--f-display); font-weight: 600; font-size: 1.15rem; }
+  .bubble .en { font-size: .82rem; opacity: .8; margin-top: 3px; }
+  .bubble .ph { font-size: .78rem; font-style: italic; opacity: .7; margin-top: 2px; }
+  .bubble.them { align-self: flex-start; background: var(--surface); border-bottom-left-radius: 5px; }
+  .bubble.you { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 5px; }
+  .bubble .playmini { background: none; border: none; color: inherit; opacity: .7; padding: 0; margin-top: 4px; font-size: .75rem; font-weight: 600; display: inline-flex; gap: 4px; align-items: center; }
+  .bubble .playmini svg { width: 13px; height: 13px; }
+  .your-turn { text-align: center; font-size: .8rem; color: var(--ink-soft); font-weight: 600; }
+
+  /* bottom actions */
+  .s-actions {
+    padding: 14px max(20px, env(safe-area-inset-left,0px)) calc(18px + env(safe-area-inset-bottom,0px));
+    display: flex; flex-direction: column; gap: 12px; align-items: center;
+  }
+  .mic {
+    width: 82px; height: 82px; border-radius: 999px; border: none;
+    background: var(--accent); color: var(--accent-ink); display: grid; place-items: center;
+    box-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 45%, transparent); transition: transform .12s ease;
+  }
+  .mic:active { transform: scale(.94); }
+  .mic svg { width: 34px; height: 34px; }
+  .mic.listening { animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); } 50% { box-shadow: 0 0 0 16px color-mix(in srgb, var(--accent) 0%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { .mic.listening { animation: none; } }
+  .mic-label { font-size: .82rem; color: var(--ink-soft); font-weight: 600; }
+
+  .self-rate { display: flex; gap: 10px; width: 100%; max-width: 440px; }
+  .self-rate button { flex: 1; border-radius: 13px; padding: 13px 8px; font-weight: 600; font-size: .9rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .self-rate button.yes { border-color: color-mix(in srgb, var(--good) 40%, var(--line)); }
+  .self-rate button.again { border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+
+  .next { width: 100%; max-width: 440px; border: none; background: var(--ink); color: var(--bg); border-radius: 14px; padding: 15px; font-weight: 600; font-size: 1rem; }
+  .next.accent { background: var(--accent); color: var(--accent-ink); }
+  .next:disabled { opacity: .4; }
+
+  /* finish */
+  .finish { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 12px; padding: 20px; }
+  .finish .big { font-family: var(--f-display); font-size: 3.4rem; line-height: 1; }
+  .finish h2 { font-family: var(--f-display); font-weight: 600; font-size: 1.7rem; margin: 0; }
+  .finish .score { font-size: 1.05rem; color: var(--ink-soft); }
+  .finish .score b { color: var(--accent); }
+  .finish .xpgain { display: inline-flex; align-items: center; gap: 6px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--ink); font-weight: 700; padding: 8px 16px; border-radius: 999px; font-size: 1.05rem; }
+</style>
+</head>
+<body>
+<!-- ============ TOP BAR ============ -->
+<header class="bar" id="topbar">
+  <div class="brand">Habla<span class="tilde">~</span></div>
+  <div class="pill xp" title="Total XP">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7z"/></svg>
+    <span id="xpNum">0</span>
+  </div>
+  <div class="pill streak" title="Day streak">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c0 3-4 4-4 8a4 4 0 0 0 8 0c0-1.5-.8-2.6-1.6-3.6C16 9 18 11 18 14a6 6 0 0 1-12 0C6 8 12 7 12 2z"/></svg>
+    <span id="streakNum">0</span>
+  </div>
+  <button class="iconbtn" id="themeBtn" aria-label="Toggle theme">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+  </button>
+</header>
+
+<main class="wrap" id="main"></main>
+
+<!-- ============ BOTTOM NAV ============ -->
+<nav class="nav" id="nav">
+  <button data-tab="learn" class="on">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+    Learn
+  </button>
+  <button data-tab="review">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.4 2.6L3 8"/><path d="M3 3v5h5"/></svg>
+    <span id="reviewBadge"></span>
+    Review
+  </button>
+  <button data-tab="talk">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-4-.9L3 21l1.9-4.5A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z"/></svg>
+    Talk
+  </button>
+  <button data-tab="you">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+    You
+  </button>
+</nav>
+
+<!-- ============ SESSION OVERLAY ============ -->
+<section class="session hidden" id="session" aria-hidden="true"></section>
+
+<script>
+/* =============================================================
+   DATA
+   ============================================================= */
+const LESSONS = [
+  { id:"greetings", emoji:"👋", title:"First Words", desc:"Hello, thanks, yes & no", items:[
+    { en:"Hello", es:"Hola", phon:"OH-lah" },
+    { en:"Good morning", es:"Buenos días", phon:"BWEH-nohs DEE-ahs" },
+    { en:"Good afternoon", es:"Buenas tardes", phon:"BWEH-nahs TAR-dehs" },
+    { en:"Thank you", es:"Gracias", phon:"GRAH-see-ahs" },
+    { en:"You're welcome", es:"De nada", phon:"deh NAH-dah" },
+    { en:"Yes, please", es:"Sí, por favor", phon:"see, por fah-VOR" },
+    { en:"No, thank you", es:"No, gracias", phon:"noh, GRAH-see-ahs" },
+    { en:"Goodbye", es:"Adiós", phon:"ah-dee-OHS" },
+  ]},
+  { id:"meeting", emoji:"🤝", title:"Meeting People", desc:"Names, how are you, nice to meet you", items:[
+    { en:"How are you?", es:"¿Cómo estás?", phon:"KOH-moh ehs-TAHS" },
+    { en:"I'm good, thanks", es:"Bien, gracias", phon:"bee-EHN, GRAH-see-ahs" },
+    { en:"What's your name?", es:"¿Cómo te llamas?", phon:"KOH-moh teh YAH-mahs" },
+    { en:"My name is Steve", es:"Me llamo Steve", phon:"meh YAH-moh steev" },
+    { en:"Nice to meet you", es:"Mucho gusto", phon:"MOO-choh GOOS-toh" },
+    { en:"Where are you from?", es:"¿De dónde eres?", phon:"deh DOHN-deh EH-rehs" },
+    { en:"I'm from the United States", es:"Soy de Estados Unidos", phon:"soy deh ehs-TAH-dohs oo-NEE-dohs" },
+  ]},
+  { id:"basics", emoji:"🗣️", title:"Getting By", desc:"Help, I don't understand, repeat", items:[
+    { en:"Do you speak English?", es:"¿Hablas inglés?", phon:"AH-blahs een-GLEHS" },
+    { en:"I don't understand", es:"No entiendo", phon:"noh ehn-tee-EHN-doh" },
+    { en:"Can you repeat that?", es:"¿Puedes repetir?", phon:"PWEH-dehs reh-peh-TEER" },
+    { en:"More slowly, please", es:"Más despacio, por favor", phon:"mahs dehs-PAH-see-oh, por fah-VOR" },
+    { en:"How do you say...?", es:"¿Cómo se dice...?", phon:"KOH-moh seh DEE-seh" },
+    { en:"I need help", es:"Necesito ayuda", phon:"neh-seh-SEE-toh ah-YOO-dah" },
+    { en:"Excuse me", es:"Perdón", phon:"per-DOHN" },
+  ]},
+  { id:"numbers", emoji:"🔢", title:"Numbers 1–10", desc:"Count from one to ten", items:[
+    { en:"One", es:"Uno", phon:"OO-noh" },
+    { en:"Two", es:"Dos", phon:"dohs" },
+    { en:"Three", es:"Tres", phon:"trehs" },
+    { en:"Four", es:"Cuatro", phon:"KWAH-troh" },
+    { en:"Five", es:"Cinco", phon:"SEEN-koh" },
+    { en:"Six", es:"Seis", phon:"says" },
+    { en:"Seven", es:"Siete", phon:"see-EH-teh" },
+    { en:"Eight", es:"Ocho", phon:"OH-choh" },
+    { en:"Nine", es:"Nueve", phon:"NWEH-veh" },
+    { en:"Ten", es:"Diez", phon:"dee-EHS" },
+  ]},
+  { id:"food", emoji:"🍽️", title:"Ordering Food", desc:"A table, water, the check", items:[
+    { en:"A table for two", es:"Una mesa para dos", phon:"OO-nah MEH-sah PAH-rah dohs" },
+    { en:"The menu, please", es:"El menú, por favor", phon:"el meh-NOO, por fah-VOR" },
+    { en:"I would like a coffee", es:"Quisiera un café", phon:"kee-see-EH-rah oon kah-FEH" },
+    { en:"Water, please", es:"Agua, por favor", phon:"AH-gwah, por fah-VOR" },
+    { en:"It's delicious", es:"Está delicioso", phon:"ehs-TAH deh-lee-see-OH-soh" },
+    { en:"The check, please", es:"La cuenta, por favor", phon:"lah KWEN-tah, por fah-VOR" },
+  ]},
+  { id:"directions", emoji:"🧭", title:"Getting Around", desc:"Where is, left, right, how much", items:[
+    { en:"Where is the bathroom?", es:"¿Dónde está el baño?", phon:"DOHN-deh ehs-TAH el BAH-nyoh" },
+    { en:"To the left", es:"A la izquierda", phon:"ah lah ees-kee-EHR-dah" },
+    { en:"To the right", es:"A la derecha", phon:"ah lah deh-REH-chah" },
+    { en:"Straight ahead", es:"Todo recto", phon:"TOH-doh REHK-toh" },
+    { en:"How much is it?", es:"¿Cuánto cuesta?", phon:"KWAN-toh KWEH-stah" },
+    { en:"Here and there", es:"Aquí y allí", phon:"ah-KEE ee ah-YEE" },
+  ]},
+];
+
+const CONVOS = [
+  { id:"cafe", emoji:"☕", title:"At the Café", desc:"Order a coffee, start to finish", turns:[
+    { who:"them", en:"Hello! Good morning.", es:"¡Hola! Buenos días.", phon:"OH-lah, BWEH-nohs DEE-ahs" },
+    { who:"you",  en:"Good morning. A coffee, please.", es:"Buenos días. Un café, por favor.", phon:"BWEH-nohs DEE-ahs. oon kah-FEH, por fah-VOR" },
+    { who:"them", en:"Anything else?", es:"¿Algo más?", phon:"AHL-goh mahs" },
+    { who:"you",  en:"No, thank you. How much is it?", es:"No, gracias. ¿Cuánto cuesta?", phon:"noh, GRAH-see-ahs. KWAN-toh KWEH-stah" },
+    { who:"them", en:"Three dollars.", es:"Tres dólares.", phon:"trehs DOH-lah-rehs" },
+    { who:"you",  en:"Here you go. Thank you!", es:"Aquí tiene. ¡Gracias!", phon:"ah-KEE tee-EH-neh. GRAH-see-ahs" },
+  ]},
+  { id:"meet", emoji:"🙋", title:"Meeting Someone", desc:"Introduce yourself", turns:[
+    { who:"them", en:"Hi, what's your name?", es:"Hola, ¿cómo te llamas?", phon:"OH-lah, KOH-moh teh YAH-mahs" },
+    { who:"you",  en:"My name is Steve. And you?", es:"Me llamo Steve. ¿Y tú?", phon:"meh YAH-moh steev. ee too" },
+    { who:"them", en:"I'm Ana. Nice to meet you.", es:"Soy Ana. Mucho gusto.", phon:"soy AH-nah. MOO-choh GOOS-toh" },
+    { who:"you",  en:"Nice to meet you too. Where are you from?", es:"Mucho gusto. ¿De dónde eres?", phon:"MOO-choh GOOS-toh. deh DOHN-deh EH-rehs" },
+    { who:"them", en:"I'm from Mexico.", es:"Soy de México.", phon:"soy deh MEH-hee-koh" },
+    { who:"you",  en:"How nice! Goodbye.", es:"¡Qué bien! Adiós.", phon:"keh bee-EHN. ah-dee-OHS" },
+  ]},
+  { id:"lost", emoji:"🗺️", title:"Asking Directions", desc:"Find the bathroom", turns:[
+    { who:"you",  en:"Excuse me, where is the bathroom?", es:"Perdón, ¿dónde está el baño?", phon:"per-DOHN, DOHN-deh ehs-TAH el BAH-nyoh" },
+    { who:"them", en:"Straight ahead, to the right.", es:"Todo recto, a la derecha.", phon:"TOH-doh REHK-toh, ah lah deh-REH-chah" },
+    { who:"you",  en:"Can you repeat that, more slowly?", es:"¿Puedes repetir, más despacio?", phon:"PWEH-dehs reh-peh-TEER, mahs dehs-PAH-see-oh" },
+    { who:"them", en:"To the right. There.", es:"A la derecha. Allí.", phon:"ah lah deh-REH-chah. ah-YEE" },
+    { who:"you",  en:"Thank you very much!", es:"¡Muchas gracias!", phon:"MOO-chahs GRAH-see-ahs" },
+  ]},
+];
+
+/* flatten every lesson item into a global pool keyed for SRS */
+const POOL = [];
+LESSONS.forEach(L => L.items.forEach((it,i)=> POOL.push({ ...it, lid:L.id, idx:i, key:L.id+":"+i })));
+const byKey = k => POOL.find(p=>p.key===k);
+
+/* =============================================================
+   STATE  (+ migration from v1)
+   ============================================================= */
+const LS_KEY = "habla.v1";
+const todayStr = () => new Date().toISOString().slice(0,10);
+const SRS_DAYS = [0,1,2,4,8,16]; // box -> interval in days
+
+function loadState(){
+  let s = { mastered:{}, stats:{}, xp:0, streak:0, lastDay:null,
+            dailyGoal:10, dailyCount:0, dailyDate:null,
+            totalScored:0, scoreSum:0 };
+  try { const raw = localStorage.getItem(LS_KEY); if (raw) s = Object.assign(s, JSON.parse(raw)); } catch(e){}
+  // migrate v1 mastered -> stats boxes
+  s.stats = s.stats || {};
+  if (s.mastered){
+    Object.keys(s.mastered).forEach(lid=>{
+      Object.keys(s.mastered[lid]).forEach(idx=>{
+        const key = lid+":"+idx;
+        if (!s.stats[key]) s.stats[key] = { box:2, miss:0, correct:1, last:todayStr() };
+      });
+    });
+  }
+  return s;
+}
+function saveState(){ try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch(e){} }
+let state = loadState();
+
+function rollDaily(){
+  const t = todayStr();
+  if (state.dailyDate !== t){ state.dailyDate = t; state.dailyCount = 0; saveState(); }
+}
+rollDaily();
+
+function touchStreak(){
+  const t = todayStr();
+  if (state.lastDay === t) return;
+  const y = new Date(Date.now()-864e5).toISOString().slice(0,10);
+  state.streak = (state.lastDay === y) ? state.streak+1 : 1;
+  state.lastDay = t;
+  saveState();
+}
+
+/* record a result for an item key */
+function record(key, passed, pct){
+  const st = state.stats[key] || { box:0, miss:0, correct:0, last:null };
+  if (passed){ st.box = Math.min(st.box+1, SRS_DAYS.length-1); st.correct++; }
+  else { st.box = 1; st.miss++; }
+  st.last = todayStr();
+  state.stats[key] = st;
+  // xp + daily
+  const gain = passed ? (pct>=85?12:10) : 3;
+  state.xp += gain;
+  rollDaily();
+  if (passed) state.dailyCount++;
+  if (typeof pct === "number"){ state.totalScored++; state.scoreSum += pct; }
+  saveState();
+  return gain;
+}
+
+/* items due for review: missed/weak first, then low boxes past their interval */
+function dueItems(){
+  const t = Date.now();
+  const due = [];
+  POOL.forEach(p=>{
+    const st = state.stats[p.key];
+    if (!st) return; // not learned yet -> not in review
+    if (st.box >= SRS_DAYS.length-1) return; // fully mastered
+    const last = st.last ? new Date(st.last).getTime() : 0;
+    const interval = SRS_DAYS[st.box]*864e5;
+    if (st.miss > st.correct || t - last >= interval) due.push(p);
+  });
+  // weakest first
+  due.sort((a,b)=>{
+    const sa=state.stats[a.key], sb=state.stats[b.key];
+    return (sa.box - sb.box) || (sb.miss - sa.miss);
+  });
+  return due;
+}
+
+/* =============================================================
+   SPEECH
+   ============================================================= */
+const synth = window.speechSynthesis;
+let esVoice = null;
+function pickVoice(){
+  if (!synth) return;
+  const vs = synth.getVoices();
+  esVoice = vs.find(v=>/es[-_]MX/i.test(v.lang)) || vs.find(v=>/es[-_]US/i.test(v.lang))
+         || vs.find(v=>/^es/i.test(v.lang)) || null;
+}
+if (synth){ pickVoice(); synth.onvoiceschanged = pickVoice; }
+function speak(text, rate=1){
+  if (!synth) return;
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = esVoice ? esVoice.lang : "es-MX";
+  if (esVoice) u.voice = esVoice;
+  u.rate = rate; synth.speak(u);
+}
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+/* Mic scoring needs the Web Speech API AND real mic access. Inside Claude's
+   artifact sandbox (an iframe) the mic is blocked with no prompt, so default to
+   self-check there; as a standalone hosted file (top-level window) mic scoring
+   turns on automatically. micBlocked latches if a mic attempt is ever refused. */
+let IN_FRAME = false; try { IN_FRAME = window.self !== window.top; } catch(e){ IN_FRAME = true; }
+let micBlocked = false;
+const canScore = () => !!SR && !IN_FRAME && !micBlocked;
+
+function norm(s){
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"")
+    .replace(/[¿?¡!.,]/g,"").replace(/\s+/g," ").trim();
+}
+function wordsOf(s){ return norm(s).split(" ").filter(Boolean); }
+function near(a,b){
+  if (Math.abs(a.length-b.length)>2) return false;
+  let d=0,i=0,j=0;
+  while(i<a.length&&j<b.length){
+    if(a[i]===b[j]){i++;j++;}
+    else { d++; if(d>1) return false;
+      if(a.length>b.length) i++; else if(b.length>a.length) j++; else {i++;j++;} }
+  }
+  d += (a.length-i)+(b.length-j);
+  return d<=1;
+}
+function scoreSpeech(target, heard){
+  const tw = wordsOf(target), hw = new Set(wordsOf(heard));
+  let hits=0;
+  const perWord = tw.map(w=>{ const ok = hw.has(w) || [...hw].some(h=>near(h,w)); if(ok)hits++; return ok; });
+  return { pct: tw.length ? Math.round(hits/tw.length*100) : 0, perWord };
+}
+
+/* =============================================================
+   RENDER — tabs
+   ============================================================= */
+const main = document.getElementById("main");
+const el = id => document.getElementById(id);
+let currentTab = "learn";
+
+function lessonProgress(L){
+  let done=0;
+  L.items.forEach((_,i)=>{ const st=state.stats[L.id+":"+i]; if(st && st.box>=3) done++; });
+  return { done, total:L.items.length, pct: Math.round(done/L.items.length*100) };
+}
+
+function refreshChrome(){
+  el("xpNum").textContent = state.xp;
+  el("streakNum").textContent = state.streak;
+  const d = dueItems().length;
+  el("reviewBadge").innerHTML = d ? `<span class="badge">${d}</span>` : "";
+  document.querySelectorAll(".nav button").forEach(b=> b.classList.toggle("on", b.dataset.tab===currentTab));
+}
+
+function render(){
+  refreshChrome();
+  if (currentTab==="learn") renderLearn();
+  else if (currentTab==="review") renderReview();
+  else if (currentTab==="talk") renderTalk();
+  else renderYou();
+  window.scrollTo(0,0);
+}
+
+function goalRing(){
+  rollDaily();
+  const pct = Math.min(state.dailyCount/state.dailyGoal, 1);
+  const r=28, c=2*Math.PI*r, off=c*(1-pct);
+  const met = state.dailyCount>=state.dailyGoal;
+  return `
+  <div class="goal-card">
+    <div class="ring">
+      <svg viewBox="0 0 66 66"><circle class="bg" cx="33" cy="33" r="${r}" fill="none" stroke-width="7"/>
+      <circle class="fg" cx="33" cy="33" r="${r}" fill="none" stroke-width="7" stroke-dasharray="${c}" stroke-dashoffset="${off}"/></svg>
+      <div class="lbl">${state.dailyCount}/${state.dailyGoal}</div>
+    </div>
+    <div class="goal-txt">
+      <div class="t">Daily goal</div>
+      <div class="d ${met?'done':''}">${met ? '✓ Done for today — nice!' : `${state.dailyGoal-state.dailyCount} more phrase${state.dailyGoal-state.dailyCount===1?'':'s'} to go`}</div>
+    </div>
+  </div>`;
+}
+
+function renderLearn(){
+  let totalMastered=0;
+  LESSONS.forEach(L=> totalMastered += lessonProgress(L).done);
+  main.innerHTML = `
+    ${goalRing()}
+    <p class="hero-line">${totalMastered ? `<b>${totalMastered} phrases</b> mastered. Keep going.` : `¡Hola! Pick a lesson and <b>start talking</b>.`}</p>
+    <p class="sec-label">Beginner path</p>
+    <div class="lessons" id="lessonList"></div>
+    <p class="mic-note">${canScore()
+      ? "🎙️ Speaking exercises score how close you get. Lessons mix speaking, building sentences, and listening."
+      : "🗣️ Speak exercises use listen → repeat → self-check. (Live mic scoring is blocked inside the Claude app — ask Steve's Claude to export a hosted version if you want auto-scoring.)"}</p>`;
+  const list = el("lessonList");
+  LESSONS.forEach(L=>{
+    const p = lessonProgress(L);
+    const b = document.createElement("button");
+    b.className = "lesson";
+    b.innerHTML = `
+      <span class="em">${L.emoji}</span>
+      <span class="body">
+        <span class="t">${L.title}</span>
+        <span class="d">${L.desc}</span>
+        <span class="meta">
+          <span class="track"><i style="width:${p.pct}%"></i></span>
+          ${p.pct===100
+            ? `<span class="done-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>`
+            : `<span class="pct">${p.done}/${p.total}</span>`}
+        </span>
+      </span>`;
+    b.addEventListener("click", ()=>startLessonSession(L));
+    list.appendChild(b);
+  });
+}
+
+function renderReview(){
+  const due = dueItems();
+  const learned = POOL.filter(p=>state.stats[p.key]).length;
+  main.innerHTML = `
+    <p class="hero-line"><b>Review</b> — drill the phrases you keep missing, spaced out so they stick.</p>
+    <button class="big-cta ${due.length?'':'flat'}" id="startReview" ${due.length?'':'disabled'}>
+      <span class="em">🔁</span>
+      <span class="body">
+        <span class="t">${due.length ? `Review ${due.length} phrase${due.length===1?'':'s'}` : 'Nothing due right now'}</span>
+        <span class="d">${due.length ? 'Weakest words first' : 'Learn more in the Learn tab — misses show up here'}</span>
+      </span>
+    </button>
+    <p class="sec-label" style="margin-top:20px">Your weak spots</p>
+    <div class="lessons" id="weakList"></div>`;
+  if (due.length){
+    el("startReview").addEventListener("click", ()=>startReviewSession(due));
+  }
+  const wl = el("weakList");
+  const weak = POOL.filter(p=>{ const s=state.stats[p.key]; return s && s.miss>0; })
+                   .sort((a,b)=>state.stats[b.key].miss-state.stats[a.key].miss).slice(0,8);
+  if (!weak.length){
+    wl.innerHTML = `<p style="color:var(--ink-soft);font-size:.9rem;padding:4px 2px">No misses yet${learned?'':' — start a lesson to build your history'}. Mess up a phrase and it lands here for extra practice.</p>`;
+  } else {
+    weak.forEach(p=>{
+      const s=state.stats[p.key];
+      const row = document.createElement("button");
+      row.className="lesson";
+      row.innerHTML = `
+        <span class="em" style="font-size:1rem;font-family:var(--f-display);font-weight:700;color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent)">${s.miss}×</span>
+        <span class="body"><span class="t" style="font-size:.98rem">${p.es}</span><span class="d">${p.en}</span></span>
+        <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></span>`;
+      row.addEventListener("click", ()=>startReviewSession([p]));
+      wl.appendChild(row);
+    });
+  }
+}
+
+function renderTalk(){
+  main.innerHTML = `
+    <p class="hero-line"><b>Conversations</b> — run a whole exchange start to finish. You say your lines out loud.</p>
+    <p class="sec-label">Roleplays</p>
+    <div class="lessons" id="convoList"></div>`;
+  const cl = el("convoList");
+  CONVOS.forEach(C=>{
+    const b=document.createElement("button");
+    b.className="lesson blue";
+    b.innerHTML=`
+      <span class="em">${C.emoji}</span>
+      <span class="body"><span class="t">${C.title}</span><span class="d">${C.desc}</span></span>
+      <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></span>`;
+    b.addEventListener("click", ()=>startConvo(C));
+    cl.appendChild(b);
+  });
+}
+
+function renderYou(){
+  const acc = state.totalScored ? Math.round(state.scoreSum/state.totalScored)+"%" : "—";
+  const mastered = POOL.filter(p=>{const s=state.stats[p.key];return s&&s.box>=3;}).length;
+  main.innerHTML = `
+    <p class="sec-label">Your progress</p>
+    <div class="you-stats">
+      <div class="you-stat"><div class="n">${state.xp}</div><div class="l">Total XP</div></div>
+      <div class="you-stat"><div class="n">${state.streak}</div><div class="l">Day streak</div></div>
+      <div class="you-stat"><div class="n">${mastered}</div><div class="l">Mastered</div></div>
+      <div class="you-stat"><div class="n">${acc}</div><div class="l">Speak accuracy</div></div>
+    </div>
+    <p class="sec-label">Settings</p>
+    <div class="setting-row">
+      <div><div class="t">Daily goal</div><div class="d">Phrases per day</div></div>
+      <div class="stepper">
+        <button id="goalDown" aria-label="Lower goal">−</button>
+        <span class="val" id="goalVal">${state.dailyGoal}</span>
+        <button id="goalUp" aria-label="Raise goal">+</button>
+      </div>
+    </div>
+    <button class="danger-btn" id="resetBtn">Reset all progress</button>`;
+  el("goalDown").addEventListener("click", ()=>{ state.dailyGoal=Math.max(5,state.dailyGoal-5); saveState(); el("goalVal").textContent=state.dailyGoal; });
+  el("goalUp").addEventListener("click", ()=>{ state.dailyGoal=Math.min(50,state.dailyGoal+5); saveState(); el("goalVal").textContent=state.dailyGoal; });
+  el("resetBtn").addEventListener("click", function(){
+    if (this.dataset.armed){ state = { mastered:{}, stats:{}, xp:0, streak:0, lastDay:null, dailyGoal:state.dailyGoal, dailyCount:0, dailyDate:todayStr(), totalScored:0, scoreSum:0 }; saveState(); render(); }
+    else { this.dataset.armed="1"; this.textContent="Tap again to confirm reset"; setTimeout(()=>{ this.dataset.armed=""; this.textContent="Reset all progress"; },3000); }
+  });
+}
+
+/* =============================================================
+   SESSION ENGINE — builds a queue of exercises
+   ex = { item, type: 'speak'|'build'|'listen', } ; convo handled separately
+   ============================================================= */
+const sess = el("session");
+let S = null;
+
+function openSession(){ el("topbar").style.display="none"; el("nav").style.display="none"; sess.classList.remove("hidden"); sess.setAttribute("aria-hidden","false"); }
+function closeSession(){
+  if (synth) synth.cancel(); stopListening();
+  sess.classList.add("hidden"); sess.setAttribute("aria-hidden","true");
+  el("topbar").style.display=""; el("nav").style.display="";
+  render();
+}
+
+/* choose exercise type for an item depending on index & scoring support */
+function buildQueue(items, mode){
+  // mode: 'lesson' | 'review'
+  return items.map((it,i)=>{
+    let types;
+    if (mode==="review") types = canScore() ? ["speak","listen","build"] : ["listen","build","speak"];
+    else types = ["speak","speak","build","listen"]; // lessons lean on speaking
+    const type = types[i % types.length];
+    return { item: byKey(it.key) || it, type };
+  });
+}
+
+function startLessonSession(L){
+  touchStreak();
+  const items = L.items.map((it,i)=>({ ...it, lid:L.id, idx:i, key:L.id+":"+i }));
+  S = { queue: buildQueue(items,"lesson"), i:0, title:L.title, xpGain:0, correct:0 };
+  openSession(); renderExercise();
+}
+function startReviewSession(items){
+  touchStreak();
+  S = { queue: buildQueue(items,"review"), i:0, title:"Review", xpGain:0, correct:0 };
+  openSession(); renderExercise();
+}
+
+function sProgress(){ requestAnimationFrame(()=>{ const b=el("sbar"); if(b) b.style.width=(S.i/S.queue.length*100)+"%"; }); }
+
+function renderExercise(){
+  if (S.i >= S.queue.length) return renderSessionFinish();
+  const ex = S.queue[S.i];
+  if (ex.type==="speak") renderSpeak(ex);
+  else if (ex.type==="listen") renderListen(ex);
+  else renderBuild(ex);
+}
+
+function sessionHead(){
+  return `<div class="s-top">
+    <button class="ghostbtn" id="sClose" aria-label="Close">✕</button>
+    <div class="s-prog"><i id="sbar"></i></div>
+    <div class="s-count">${S.i+1}/${S.queue.length}</div>
+  </div>`;
+}
+function wireClose(){ el("sClose").addEventListener("click", closeSession); }
+
+/* ---------- SPEAK ---------- */
+function renderSpeak(ex){
+  const it = ex.item;
+  const esWords = it.es.split(" ").map((w,wi)=>`<span class="w" data-w="${wi}">${w}</span>`).join(" ");
+  sess.innerHTML = `
+    ${sessionHead()}
+    <div class="stage">
+      <div class="ex-type">Say it</div>
+      <div class="prompt-en">${it.en}</div>
+      <div class="prompt-es" id="esLine">${esWords}</div>
+      <div class="phon">${renderPhon(it.phon)}</div>
+      <div class="hear-row">
+        <button class="hear" id="hearBtn">${spk(0)} Hear it</button>
+        <button class="hear slow" id="slowBtn">${spk(1)} Slow</button>
+      </div>
+      <div class="feedback" id="fb"></div>
+      <div class="heard" id="heard"></div>
+    </div>
+    <div class="s-actions" id="acts"></div>`;
+  sProgress(); wireClose();
+  el("hearBtn").addEventListener("click", ()=>speak(it.es,1));
+  el("slowBtn").addEventListener("click", ()=>speak(it.es,0.6));
+  speakActions("idle", ex);
+  setTimeout(()=>speak(it.es,0.95), 350);
+}
+function renderPhon(p){ return p.replace(/([A-Z]{2,})/g, "<b>$1</b>"); }
+function spk(slow){ return slow
+  ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 10.5a2.5 2.5 0 0 1 0 3"/></svg>`
+  : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>`; }
+
+function speakActions(mode, ex){
+  const box = el("acts"); const it = ex.item;
+  if (mode==="idle"){
+    if (canScore()){
+      box.innerHTML = `<button class="mic" id="micBtn" aria-label="Tap to speak"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button><div class="mic-label">Tap &amp; say it out loud</div>`;
+      el("micBtn").addEventListener("click", ()=>startListening(ex));
+    } else {
+      box.innerHTML = `<div class="mic-label" style="margin-bottom:2px">Say it out loud, then:</div>
+        <div class="self-rate"><button class="again" id="rAgain">Try again</button><button class="yes" id="rGot">Got it ✓</button></div>`;
+      el("rGot").addEventListener("click", ()=>{ const g=record(it.key,true,null); S.xpGain+=g; S.correct++; advance(); });
+      el("rAgain").addEventListener("click", ()=>speak(it.es,0.75));
+    }
+  }
+  if (mode==="listening"){
+    box.innerHTML = `<button class="mic listening" id="micBtn" aria-label="Listening"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button><div class="mic-label">Listening… tap to stop</div>`;
+    el("micBtn").addEventListener("click", stopListening);
+  }
+  if (mode==="result"){
+    box.innerHTML = `<div class="self-rate"><button class="again" id="retry">Retry</button><button class="next accent" id="nextBtn" style="flex:2">${S.i+1>=S.queue.length?"Finish":"Next →"}</button></div>`;
+    el("retry").addEventListener("click", ()=>renderSpeak(ex));
+    el("nextBtn").addEventListener("click", ()=>advance());
+  }
+}
+let rec=null;
+function startListening(ex){
+  if (!canScore()) return;
+  const it = ex.item;
+  try {
+    rec = new SR(); rec.lang="es-MX"; rec.interimResults=false; rec.maxAlternatives=3;
+    rec.onresult = e=>{ let best=""; for(const alt of e.results[0]) best+=" "+alt.transcript; handleHeard(ex, best.trim()); };
+    rec.onerror = e=>{
+      if (/not-allowed|service-not-allowed|audio-capture/.test(e.error||"")){
+        micBlocked = true; renderSpeak(ex); return; // drop to self-check for the rest of the session
+      }
+      speakActions("idle",ex); const fb=el("fb"); if(fb){fb.className="feedback mid"; fb.textContent="Didn't catch that — try again";}
+    };
+    S._listening=true; speakActions("listening",ex); rec.start();
+  } catch(err){ speakActions("idle",ex); }
+}
+function stopListening(){ if(S) S._listening=false; if(rec){ try{rec.stop();}catch(e){} } }
+function handleHeard(ex, heard){
+  const it = ex.item;
+  const { pct, perWord } = scoreSpeech(it.es, heard);
+  const ws = document.querySelectorAll("#esLine .w");
+  perWord.forEach((ok,wi)=>{ if(ws[wi]) ws[wi].className="w "+(ok?"hit":"miss"); });
+  const fb = el("fb");
+  if (pct>=85){ fb.className="feedback good"; fb.textContent=`¡Perfecto! ${pct}%`; }
+  else if (pct>=60){ fb.className="feedback mid"; fb.textContent=`Close — ${pct}%`; }
+  else { fb.className="feedback bad"; fb.textContent=`${pct}% — listen again`; }
+  el("heard").innerHTML = heard ? `heard: <b>“${heard}”</b>` : "";
+  const gain = record(it.key, pct>=60, pct);
+  S.xpGain += gain; if (pct>=60) S.correct++;
+  speakActions("result", ex);
+}
+
+/* ---------- LISTEN QUIZ ---------- */
+function renderListen(ex){
+  const it = ex.item;
+  // distractors: 3 other EN from pool
+  const others = POOL.filter(p=>p.en!==it.en);
+  shuffle(others);
+  const opts = shuffle([it.en, others[0].en, others[1].en, others[2].en]);
+  sess.innerHTML = `
+    ${sessionHead()}
+    <div class="stage">
+      <div class="ex-type">Listen</div>
+      <div class="prompt-en">What did you hear?</div>
+      <div class="hear-row">
+        <button class="hear" id="hearBtn">${spk(0)} Play</button>
+        <button class="hear slow" id="slowBtn">${spk(1)} Slow</button>
+      </div>
+      <div class="opts" id="opts"></div>
+      <div class="feedback" id="fb"></div>
+    </div>
+    <div class="s-actions" id="acts"></div>`;
+  sProgress(); wireClose();
+  el("hearBtn").addEventListener("click", ()=>speak(it.es,1));
+  el("slowBtn").addEventListener("click", ()=>speak(it.es,0.6));
+  const ob = el("opts");
+  opts.forEach(o=>{
+    const b=document.createElement("button"); b.className="opt"; b.textContent=o;
+    b.addEventListener("click", ()=>{
+      document.querySelectorAll("#opts .opt").forEach(x=>x.disabled=true);
+      const right = o===it.en;
+      b.classList.add(right?"correct":"wrong");
+      if(!right) document.querySelectorAll("#opts .opt").forEach(x=>{ if(x.textContent===it.en) x.classList.add("correct"); });
+      const fb=el("fb");
+      fb.className="feedback "+(right?"good":"bad");
+      fb.textContent = right ? "¡Correcto!" : `It was “${it.es}”`;
+      const gain=record(it.key, right, right?100:0); S.xpGain+=gain; if(right)S.correct++;
+      el("acts").innerHTML = `<button class="next accent" id="nextBtn">${S.i+1>=S.queue.length?"Finish":"Next →"}</button>`;
+      el("nextBtn").addEventListener("click", ()=>advance());
+    });
+    ob.appendChild(b);
+  });
+  setTimeout(()=>speak(it.es,0.95), 350);
+}
+
+/* ---------- BUILD A SENTENCE ---------- */
+function renderBuild(ex){
+  const it = ex.item;
+  const target = it.es.split(" ");
+  const bank = shuffle(target.map((w,i)=>({w,i})));
+  let placed = [];
+  sess.innerHTML = `
+    ${sessionHead()}
+    <div class="stage">
+      <div class="ex-type">Build it</div>
+      <div class="prompt-en">${it.en}</div>
+      <div class="phon">${renderPhon(it.phon)}</div>
+      <button class="hear" id="hearBtn" style="align-self:center">${spk(0)} Hear it</button>
+      <div class="answer-slot" id="slot"></div>
+      <div class="bank" id="bank"></div>
+      <div class="feedback" id="fb"></div>
+    </div>
+    <div class="s-actions" id="acts">
+      <button class="next accent" id="checkBtn" disabled>Check</button>
+    </div>`;
+  sProgress(); wireClose();
+  el("hearBtn").addEventListener("click", ()=>speak(it.es,0.9));
+  const slot=el("slot"), bankEl=el("bank"), checkBtn=el("checkBtn");
+
+  function drawBank(){
+    bankEl.innerHTML="";
+    bank.forEach((tok,bi)=>{
+      const c=document.createElement("button"); c.className="chip"+(tok.used?" used":""); c.textContent=tok.w;
+      c.addEventListener("click", ()=>{ if(tok.used)return; tok.used=true; placed.push(tok); redraw(); });
+      bankEl.appendChild(c);
+    });
+  }
+  function drawSlot(){
+    slot.innerHTML=""; slot.className="answer-slot";
+    placed.forEach((tok,pi)=>{
+      const c=document.createElement("button"); c.className="chip placed"; c.textContent=tok.w;
+      c.addEventListener("click", ()=>{ tok.used=false; placed.splice(pi,1); redraw(); });
+      slot.appendChild(c);
+    });
+    checkBtn.disabled = placed.length!==target.length;
+  }
+  function redraw(){ drawBank(); drawSlot(); }
+  redraw();
+
+  checkBtn.addEventListener("click", ()=>{
+    const attempt = placed.map(t=>t.w).join(" ");
+    const right = norm(attempt)===norm(it.es);
+    slot.className="answer-slot "+(right?"ok":"no");
+    const fb=el("fb");
+    fb.className="feedback "+(right?"good":"bad");
+    fb.textContent = right ? "¡Perfecto!" : `Correct: “${it.es}”`;
+    document.querySelectorAll("#bank .chip").forEach(c=>c.classList.add("used"));
+    const gain=record(it.key, right, right?100:0); S.xpGain+=gain; if(right)S.correct++;
+    speak(it.es, 0.95);
+    el("acts").innerHTML = `<div class="self-rate"><button class="again" id="retry">Retry</button><button class="next accent" id="nextBtn" style="flex:2">${S.i+1>=S.queue.length?"Finish":"Next →"}</button></div>`;
+    el("retry").addEventListener("click", ()=>renderBuild(ex));
+    el("nextBtn").addEventListener("click", ()=>advance());
+  });
+}
+
+function advance(){ if(synth)synth.cancel(); S.i++; renderExercise(); }
+
+function renderSessionFinish(){
+  const total=S.queue.length;
+  sess.innerHTML = `
+    <div class="s-top"><button class="ghostbtn" id="sClose">✕</button><div class="s-prog"><i style="width:100%"></i></div><div class="s-count">done</div></div>
+    <div class="finish">
+      <div class="big">🎉</div>
+      <h2>¡Bien hecho!</h2>
+      <div class="score">You got <b>${S.correct}/${total}</b> in ${S.title}</div>
+      <div class="xpgain"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px"><path d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7z"/></svg> +${S.xpGain} XP</div>
+      <button class="next accent" id="againBtn" style="max-width:300px;margin-top:6px">Done</button>
+    </div>`;
+  el("sClose").addEventListener("click", closeSession);
+  el("againBtn").addEventListener("click", closeSession);
+}
+
+/* =============================================================
+   CONVERSATION MODE
+   ============================================================= */
+let C = null;
+function startConvo(convo){
+  touchStreak();
+  C = { convo, i:0, xpGain:0 };
+  openSession(); renderConvoStep();
+}
+function renderConvoStep(){
+  if (C.i >= C.convo.turns.length) return renderConvoFinish();
+  const turns = C.convo.turns;
+  // show history up to current
+  const bubbles = turns.slice(0, C.i+1).map((t,ti)=>{
+    const active = ti===C.i;
+    return `<div class="bubble ${t.who}">
+      <div class="es">${t.es}</div>
+      <div class="en">${t.en}</div>
+      ${active?`<div class="ph">${t.phon}</div>`:''}
+      <button class="playmini" data-play="${ti}">${spk(0)} play</button>
+    </div>`;
+  }).join("");
+  const cur = turns[C.i];
+  sess.innerHTML = `
+    ${convoHead()}
+    <div class="stage" style="justify-content:flex-start;padding-top:8px">
+      <div class="ex-type">${C.convo.emoji} ${C.convo.title}</div>
+      <div class="convo">${bubbles}</div>
+      ${cur.who==="you" ? `<div class="your-turn">👇 Your turn — say it out loud</div>` : ``}
+    </div>
+    <div class="s-actions" id="acts"></div>`;
+  sProgressConvo();
+  el("sClose").addEventListener("click", closeSession);
+  document.querySelectorAll("[data-play]").forEach(b=> b.addEventListener("click", ()=>speak(turns[+b.dataset.play].es, 0.95)));
+  const acts = el("acts");
+  if (cur.who==="them"){
+    acts.innerHTML = `<button class="next accent" id="nextBtn">Next →</button>`;
+    el("nextBtn").addEventListener("click", convoAdvance);
+    setTimeout(()=>speak(cur.es, 0.95), 300);
+  } else {
+    if (canScore()){
+      acts.innerHTML = `<button class="mic" id="micBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button><div class="mic-label">Tap &amp; say your line</div><div class="feedback" id="fb"></div>`;
+      el("micBtn").addEventListener("click", ()=>convoListen(cur));
+    } else {
+      acts.innerHTML = `<div class="self-rate"><button class="again" id="hearIt">Hear it</button><button class="yes" id="saidIt">Said it ✓</button></div>`;
+      el("hearIt").addEventListener("click", ()=>speak(cur.es,0.8));
+      el("saidIt").addEventListener("click", ()=>{ C.xpGain+=8; convoAdvance(); });
+    }
+  }
+}
+function convoHead(){ return `<div class="s-top"><button class="ghostbtn" id="sClose">✕</button><div class="s-prog"><i id="cbar"></i></div><div class="s-count">${C.i+1}/${C.convo.turns.length}</div></div>`; }
+function sProgressConvo(){ requestAnimationFrame(()=>{ const b=el("cbar"); if(b)b.style.width=(C.i/C.convo.turns.length*100)+"%"; }); }
+let crec=null;
+function convoListen(cur){
+  try{
+    crec=new SR(); crec.lang="es-MX"; crec.interimResults=false; crec.maxAlternatives=3;
+    el("acts").querySelector(".mic").classList.add("listening");
+    crec.onresult=e=>{ let best=""; for(const a of e.results[0]) best+=" "+a.transcript;
+      const {pct}=scoreSpeech(cur.es,best.trim());
+      const fb=el("fb"); fb.className="feedback "+(pct>=60?"good":"mid"); fb.textContent = pct>=60?`¡Bien! ${pct}%`:`${pct}% — tap to continue anyway`;
+      C.xpGain += pct>=60?10:4;
+      const acts=el("acts");
+      const nb=document.createElement("button"); nb.className="next accent"; nb.textContent="Next →"; nb.style.marginTop="10px";
+      nb.addEventListener("click", convoAdvance); acts.appendChild(nb);
+    };
+    crec.onerror=(e)=>{
+      if (/not-allowed|service-not-allowed|audio-capture/.test(e.error||"")){ micBlocked=true; renderConvoStep(); return; }
+      const fb=el("fb"); if(fb){fb.className="feedback mid"; fb.textContent="Didn't catch that — tap Next to continue"; } const acts=el("acts"); const nb=document.createElement("button"); nb.className="next accent"; nb.textContent="Next →"; nb.style.marginTop="10px"; nb.addEventListener("click",convoAdvance); acts.appendChild(nb); };
+    crec.start();
+  }catch(e){ convoAdvance(); }
+}
+function convoAdvance(){ if(synth)synth.cancel(); if(crec){try{crec.stop();}catch(e){}} C.i++; renderConvoStep(); }
+function renderConvoFinish(){
+  state.xp += C.xpGain; rollDaily(); state.dailyCount += Math.ceil(C.convo.turns.length/2); saveState();
+  sess.innerHTML = `
+    <div class="s-top"><button class="ghostbtn" id="sClose">✕</button><div class="s-prog"><i style="width:100%"></i></div><div class="s-count">done</div></div>
+    <div class="finish">
+      <div class="big">💬</div>
+      <h2>¡Conversación completa!</h2>
+      <div class="score">You ran through <b>${C.convo.title}</b></div>
+      <div class="xpgain"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px"><path d="M12 2l2.9 6.3 6.9.7-5.1 4.6 1.4 6.8L12 17.8 5.9 20.4l1.4-6.8L2.2 9l6.9-.7z"/></svg> +${C.xpGain} XP</div>
+      <button class="next accent" id="againBtn" style="max-width:300px;margin-top:6px">Done</button>
+    </div>`;
+  el("sClose").addEventListener("click", closeSession);
+  el("againBtn").addEventListener("click", closeSession);
+}
+
+/* =============================================================
+   UTIL
+   ============================================================= */
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+/* nav */
+document.querySelectorAll(".nav button").forEach(b=>{
+  b.addEventListener("click", ()=>{ currentTab=b.dataset.tab; render(); });
+});
+
+/* theme */
+(function themeInit(){
+  let saved=null; try{ saved=localStorage.getItem("habla.theme"); }catch(e){}
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+  el("themeBtn").addEventListener("click", ()=>{
+    const c=document.documentElement.getAttribute("data-theme");
+    const dark = c ? c==="dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = dark?"light":"dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try{ localStorage.setItem("habla.theme", next); }catch(e){}
+  });
+})();
+
+render();
+</script>
+
+</body>
+</html>
