@@ -543,7 +543,7 @@ function speak(text, rate=1){
     const slow = rate < 0.85;
     const url = TTS_PROXY + "/?tl=" + encodeURIComponent(lang.gcode) +
                 "&slow=" + (slow ? "1" : "0") + "&q=" + encodeURIComponent(text);
-    try { curAudio = new Audio(url); curAudio.play().catch(()=>{}); } catch(e){}
+    try { curAudio = new Audio(url); if (slow) curAudio.playbackRate = 0.65; curAudio.play().catch(()=>{}); } catch(e){}
     return;
   }
   if (!synth) return;
