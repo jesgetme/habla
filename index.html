@@ -5,9 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!--
   Habla — multi-language speaking trainer (Speak-style)
-  Version: v3.0
+  Version: v3.1
   Last Modified: 2026-10-29
   Changelog:
+    v3.1 — Igbo audio LIVE: routes Igbo TTS through the habla-tts Cloudflare Worker
+           (Google blocks direct browser playback; the Worker fetches it server-side). Hear it / Slow
+           now speak Igbo. Updated Igbo note.
     v3.0 — multi-language. Added Igbo (từ scratch, beginner) with free audio via Google Translate
            TTS (no key, no cost) + self-check speaking (free Igbo mic scoring isn't viable yet).
            Added Spanish lessons: days, weather, past tense. Added Hard Mode (hides target text on
@@ -517,6 +520,7 @@ function dueItems(){
 /* =============================================================
    SPEECH — out (webspeech or Google TTS), in (recognition)
    ============================================================= */
+const TTS_PROXY = "https://habla-tts.jesgetme.workers.dev"; // Cloudflare Worker — free Igbo audio
 const synth = window.speechSynthesis;
 let voices = [];
 function pickVoices(){ if (synth) voices = synth.getVoices(); }
@@ -534,10 +538,11 @@ function speak(text, rate=1){
   const lang = L();
   stopAudio();
   if (lang.tts === "gtts"){
-    // Free Google Translate TTS — plays as an audio source, no key.
+    // Igbo audio via the habla-tts Cloudflare Worker (free). It fetches Google's voice
+    // server-side, since Google blocks direct browser playback.
     const slow = rate < 0.85;
-    const url = "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=" + lang.gcode +
-                (slow ? "&ttsspeed=0.3" : "") + "&q=" + encodeURIComponent(text);
+    const url = TTS_PROXY + "/?tl=" + encodeURIComponent(lang.gcode) +
+                "&slow=" + (slow ? "1" : "0") + "&q=" + encodeURIComponent(text);
     try { curAudio = new Audio(url); curAudio.play().catch(()=>{}); } catch(e){}
     return;
   }
@@ -609,7 +614,7 @@ function renderLearn(){
 }
 function micNote(){
   if (state.lang==="ig")
-    return "🗣️ Igbo audio is free via Google's voice (tap Hear it). Speaking uses self-check — free instant scoring isn't available for Igbo yet.";
+    return "🔊 Tap Hear it for real Igbo audio. Speaking uses self-check — say it out loud, then rate yourself (free instant Igbo mic-scoring isn't available yet).";
   return canScore()
     ? "🎙️ Speaking exercises score how close you get. Lessons mix speaking, building sentences, and listening."
     : "🗣️ Speak exercises use listen → repeat → self-check. Open on your hosted site in Chrome for live mic scoring.";
