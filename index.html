@@ -5,10 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!--
   Habla — multi-language speaking trainer (Speak-style)
-  Version: v3.1
+  Version: v3.2
   Last Modified: 2026-10-29
   Changelog:
-    v3.1 — Igbo audio LIVE: routes Igbo TTS through the habla-tts Cloudflare Worker
+    v3.2 — Igbo audio now plays from bundled pre-generated clips in audio/ig/ (generated once by
+           generate_igbo_audio.py using the local MMS model). No API, no key, no Worker — always
+           works. Retired the Google/HF runtime path (both proved unreliable/deprecated). Clip
+           filenames use a hash that matches the generator. Audio goes live when audio/ig/ is committed.
+    v3.1 — Igbo audio via the habla-tts Cloudflare Worker
            (Google blocks direct browser playback; the Worker fetches it server-side). Hear it / Slow
            now speak Igbo. Updated Igbo note.
     v3.0 — multi-language. Added Igbo (từ scratch, beginner) with free audio via Google Translate
@@ -377,7 +381,7 @@ const LANGS = {
 
   ig: {
     name: "Igbo", native: "Igbo", flag: "🇳🇬",
-    tts: "gtts", recLang: "ig", gcode: "ig", recog: false,
+    tts: "clips", recLang: "ig", gcode: "ig", recog: false,
     lessons: [
       { id:"ig-first", emoji:"👋", title:"First Words", desc:"Okwu Mbụ — hello, thanks, yes & no", items:[
         { en:"Hello", es:"Ndeewo", phon:"n-DEH-eh-woh" },
@@ -520,7 +524,8 @@ function dueItems(){
 /* =============================================================
    SPEECH — out (webspeech or Google TTS), in (recognition)
    ============================================================= */
-const TTS_PROXY = "https://habla-tts.jesgetme.workers.dev"; // Cloudflare Worker — free Igbo audio
+// Bundled-clip id — MUST match generate_igbo_audio.py's clip_id() (djb2-xor, 32-bit).
+function clipId(s){ let x = 5381 >>> 0; for (const ch of s){ x = (((x * 33) >>> 0) ^ (ch.codePointAt(0) >>> 0)) >>> 0; } return x.toString(16).padStart(8, "0"); }
 const synth = window.speechSynthesis;
 let voices = [];
 function pickVoices(){ if (synth) voices = synth.getVoices(); }
@@ -537,13 +542,11 @@ function stopAudio(){ if (curAudio){ try{curAudio.pause();}catch(e){} curAudio=n
 function speak(text, rate=1){
   const lang = L();
   stopAudio();
-  if (lang.tts === "gtts"){
-    // Igbo audio via the habla-tts Cloudflare Worker (free). It fetches Google's voice
-    // server-side, since Google blocks direct browser playback.
+  if (lang.tts === "clips"){
+    // Bundled pre-generated audio (see generate_igbo_audio.py). No API — always works.
     const slow = rate < 0.85;
-    const url = TTS_PROXY + "/?tl=" + encodeURIComponent(lang.gcode) +
-                "&slow=" + (slow ? "1" : "0") + "&q=" + encodeURIComponent(text);
-    try { curAudio = new Audio(url); if (slow) curAudio.playbackRate = 0.65; curAudio.play().catch(()=>{}); } catch(e){}
+    const url = "audio/" + lang.gcode + "/" + clipId(text) + ".wav";
+    try { curAudio = new Audio(url); if (slow) curAudio.playbackRate = 0.6; curAudio.play().catch(()=>{}); } catch(e){}
     return;
   }
   if (!synth) return;
@@ -614,7 +617,7 @@ function renderLearn(){
 }
 function micNote(){
   if (state.lang==="ig")
-    return "🔊 Tap Hear it for real Igbo audio. Speaking uses self-check — say it out loud, then rate yourself (free instant Igbo mic-scoring isn't available yet).";
+    return "🔊 Tap Hear it for Igbo audio (bundled, no internet needed). Speaking uses self-check — say it out loud, then rate yourself.";
   return canScore()
     ? "🎙️ Speaking exercises score how close you get. Lessons mix speaking, building sentences, and listening."
     : "🗣️ Speak exercises use listen → repeat → self-check. Open on your hosted site in Chrome for live mic scoring.";
