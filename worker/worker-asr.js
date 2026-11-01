@@ -1,6 +1,6 @@
 /*
   Habla ASR proxy — Cloudflare Worker (Groq Whisper)
-  Version: v1.0
+  Version: v1.1
   Last Modified: 2026-10-31
   Changelog: v1.0 — receives recorded audio from the app and forwards it to Groq's Whisper
              speech-to-text (free tier), returning the transcript as JSON. Powers real Spanish
@@ -29,8 +29,10 @@ export default {
     const language = (inForm.get("language") || "es").toString();
     if (!file) return json({ error: "no audio file" }, 400);
 
+    // Groq detects the audio format from the filename extension — keep the one the app sent.
+    const fname = (file.name && file.name.includes(".")) ? file.name : "audio.webm";
     const fd = new FormData();
-    fd.append("file", file, "clip");
+    fd.append("file", file, fname);
     fd.append("model", "whisper-large-v3-turbo");
     fd.append("language", language);
     fd.append("response_format", "json");
