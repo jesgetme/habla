@@ -5,9 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!--
   Habla — multi-language speaking trainer (Speak-style)
-  Version: v3.3
+  Version: v3.4
   Last Modified: 2026-10-31
   Changelog:
+    v3.4 — Real Spanish mic scoring on iPhone. Records audio (works on iOS, unlike the live Web
+           Speech API) and sends it to a Groq Whisper ASR via the habla-asr Cloudflare Worker;
+           transcript is scored against the target. Falls back to self-check if the recorder is
+           denied or the scorer is unreachable. Igbo stays self-check (no Igbo ASR exists).
     v3.3 — Spanish audio hardened for iOS. iOS can't reliably use the browser speech engine (both
            Chrome and Safari fail — TTS silent, mic recognition hangs). Now: Spanish "Hear it" uses
            the native voice where it works (desktop/Android) and falls back to bundled clips in
@@ -279,7 +283,7 @@ html,body{margin:0;} body{font-family:"DM Sans",system-ui,sans-serif;font-size:1
 const LANGS = {
   es: {
     name: "Spanish", native: "Español", flag: "🇪🇸",
-    tts: "webspeech", recLang: "es-MX", gcode: "es", recog: true,
+    tts: "webspeech", recLang: "es-MX", gcode: "es", recog: true, asr: true,
     lessons: [
       { id:"greetings", emoji:"👋", title:"First Words", desc:"Hello, thanks, yes & no", items:[
         { en:"Hello", es:"Hola", phon:"OH-lah" },
@@ -385,7 +389,7 @@ const LANGS = {
 
   ig: {
     name: "Igbo", native: "Igbo", flag: "🇳🇬",
-    tts: "clips", recLang: "ig", gcode: "ig", recog: false,
+    tts: "clips", recLang: "ig", gcode: "ig", recog: false, asr: false,
     lessons: [
       { id:"ig-first", emoji:"👋", title:"First Words", desc:"Okwu Mbụ — hello, thanks, yes & no", items:[
         { en:"Hello", es:"Ndeewo", phon:"n-DEH-eh-woh" },
@@ -563,6 +567,41 @@ let micBlocked = false;
 /* scoring needs: language supports recognition, the Web Speech API, top-level, not blocked, not iOS */
 const canScore = () => L().recog && !!SR && !IN_FRAME && !micBlocked && !IS_IOS;
 
+/* --- Whisper scoring: record audio -> ASR Worker (Groq Whisper) -> transcript. Works on iOS. --- */
+const ASR_PROXY = "https://habla-asr.jesgetme.workers.dev"; // Cloudflare Worker proxying Groq Whisper (free)
+const HAS_RECORD = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+let recordBlocked = false;
+const whisperOK   = () => !!L().asr && !!ASR_PROXY && HAS_RECORD && !recordBlocked;
+const webspeechOK = () => !!L().recog && !!SR && !IN_FRAME && !micBlocked && !IS_IOS;
+const scoreMode   = () => whisperOK() ? "whisper" : (webspeechOK() ? "webspeech" : "self");
+let mediaRec=null, mediaChunks=[], mediaStream=null;
+async function startRecording(){
+  mediaChunks=[];
+  mediaStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+  let opts;
+  if (window.MediaRecorder && MediaRecorder.isTypeSupported){
+    if (MediaRecorder.isTypeSupported("audio/webm")) opts={mimeType:"audio/webm"};
+    else if (MediaRecorder.isTypeSupported("audio/mp4")) opts={mimeType:"audio/mp4"};
+  }
+  mediaRec = opts ? new MediaRecorder(mediaStream,opts) : new MediaRecorder(mediaStream);
+  mediaRec.ondataavailable = e=>{ if(e.data && e.data.size) mediaChunks.push(e.data); };
+  mediaRec.start();
+}
+function stopRecording(){
+  return new Promise(res=>{
+    if(!mediaRec){ res(null); return; }
+    mediaRec.onstop=()=>{ const type=mediaRec.mimeType||"audio/mp4"; const blob=new Blob(mediaChunks,{type}); if(mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream=null; } mediaRec=null; res(blob); };
+    try{ mediaRec.stop(); }catch(e){ res(null); }
+  });
+}
+async function transcribe(blob, language){
+  const ext = blob.type.indexOf("webm")>=0 ? "webm" : (blob.type.indexOf("mp4")>=0 || blob.type.indexOf("mpeg")>=0 ? "mp4" : "wav");
+  const fd = new FormData(); fd.append("file", blob, "clip."+ext); fd.append("language", language);
+  const r = await fetch(ASR_PROXY, { method:"POST", body:fd });
+  if(!r.ok) throw new Error("asr "+r.status);
+  const j = await r.json(); return (j.text||"").trim();
+}
+
 function norm(s){ return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[¿?¡!.,]/g,"").replace(/\s+/g," ").trim(); }
 function wordsOf(s){ return norm(s).split(" ").filter(Boolean); }
 function near(a,b){ if(Math.abs(a.length-b.length)>2) return false; let d=0,i=0,j=0;
@@ -618,10 +657,11 @@ function renderLearn(){
 }
 function micNote(){
   if (state.lang==="ig")
-    return "🔊 Tap Hear it for Igbo audio (bundled, no internet needed). Speaking uses self-check — say it out loud, then rate yourself.";
-  return canScore()
-    ? "🎙️ Speaking exercises score how close you get. Lessons mix speaking, building sentences, and listening."
-    : "🗣️ Speak exercises use listen → repeat → self-check. Live mic scoring works on desktop Chrome or Android (iPhone can't do it reliably).";
+    return "🔊 Tap Hear it for Igbo audio (bundled). Speaking uses self-check — say it out loud, then rate yourself.";
+  const sm = scoreMode();
+  if (sm==="whisper")   return "🎙️ Tap the mic, say the phrase, and it scores your pronunciation — works right here on your phone.";
+  if (sm==="webspeech") return "🎙️ Tap the mic and say the phrase out loud — it scores how close you got.";
+  return "🗣️ Speak exercises use self-check right now. Say it out loud and rate yourself.";
 }
 
 function renderReview(){
@@ -704,7 +744,7 @@ function closeSession(){ stopAudio(); stopListening(); sess.classList.add("hidde
 function buildQueue(items, mode){
   return items.map((it,i)=>{
     let types;
-    if (mode==="review") types = canScore() ? ["speak","listen","build"] : ["listen","build","speak"];
+    if (mode==="review") types = (scoreMode()!=="self") ? ["speak","listen","build"] : ["listen","build","speak"];
     else types = ["speak","speak","build","listen"];
     return { item: byKey(it.key) || it, type: types[i % types.length] };
   });
@@ -749,27 +789,60 @@ function renderSpeak(ex){
   setTimeout(()=>speak(it.es, 0.95), 350);
 }
 function unveil(){ const l=el("esLine"); if(l) l.classList.remove("veiled"); const p=el("phonLine"); if(p) p.style.visibility="visible"; const r=el("revealBtn"); if(r) r.style.display="none"; }
+const MIC_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>`;
+const STOP_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+function selfRate(it){
+  const box=el("acts");
+  box.innerHTML=`<div class="mic-label" style="margin-bottom:2px">Say it out loud, then:</div><div class="self-rate"><button class="again" id="rAgain">Try again</button><button class="yes" id="rGot">Got it ✓</button></div>`;
+  el("rGot").addEventListener("click", ()=>{ unveil(); const g=record(it.key,true,null); S.xpGain+=g; S.correct++; advance(); });
+  el("rAgain").addEventListener("click", ()=>speak(it.es,0.75));
+}
 function speakActions(mode, ex){
   const box=el("acts"); const it=ex.item;
   if (mode==="idle"){
-    if (canScore()){
-      box.innerHTML=`<button class="mic" id="micBtn" aria-label="Tap to speak"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button><div class="mic-label">Tap &amp; say it out loud</div>`;
-      el("micBtn").addEventListener("click", ()=>startListening(ex));
-    } else {
-      box.innerHTML=`<div class="mic-label" style="margin-bottom:2px">Say it out loud, then:</div><div class="self-rate"><button class="again" id="rAgain">Try again</button><button class="yes" id="rGot">Got it ✓</button></div>`;
-      el("rGot").addEventListener("click", ()=>{ unveil(); const g=record(it.key,true,null); S.xpGain+=g; S.correct++; advance(); });
-      el("rAgain").addEventListener("click", ()=>speak(it.es,0.75));
-    }
+    const sm = scoreMode();
+    if (sm==="whisper" || sm==="webspeech"){
+      box.innerHTML=`<button class="mic" id="micBtn" aria-label="Tap to speak">${MIC_SVG}</button><div class="mic-label">Tap &amp; say it out loud</div>`;
+      el("micBtn").addEventListener("click", ()=> sm==="whisper" ? startWhisper(ex) : startListening(ex));
+    } else { selfRate(it); }
   }
   if (mode==="listening"){
-    box.innerHTML=`<button class="mic listening" id="micBtn" aria-label="Listening"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button><div class="mic-label">Listening… tap to stop</div>`;
+    box.innerHTML=`<button class="mic listening" id="micBtn" aria-label="Listening">${STOP_SVG}</button><div class="mic-label">Listening… tap to stop</div>`;
     el("micBtn").addEventListener("click", stopListening);
+  }
+  if (mode==="recording"){
+    box.innerHTML=`<button class="mic listening" id="micBtn" aria-label="Recording">${STOP_SVG}</button><div class="mic-label">Recording… tap when done</div>`;
+    el("micBtn").addEventListener("click", ()=>finishWhisper(ex));
+  }
+  if (mode==="scoring"){
+    box.innerHTML=`<button class="mic" id="micBtn" disabled style="opacity:.55">${MIC_SVG}</button><div class="mic-label">Scoring…</div>`;
+  }
+  if (mode==="scorefail"){
+    box.innerHTML=`<div class="mic-label" style="margin-bottom:2px">Couldn't reach the scorer — rate yourself:</div><div class="self-rate"><button class="again" id="retry">Retry mic</button><button class="yes" id="rGot">Got it ✓</button></div>`;
+    el("retry").addEventListener("click", ()=>renderSpeak(ex));
+    el("rGot").addEventListener("click", ()=>{ unveil(); const g=record(it.key,true,null); S.xpGain+=g; S.correct++; advance(); });
   }
   if (mode==="result"){
     box.innerHTML=`<div class="self-rate"><button class="again" id="retry">Retry</button><button class="next accent" id="nextBtn" style="flex:2">${S.i+1>=S.queue.length?"Finish":"Next →"}</button></div>`;
     el("retry").addEventListener("click", ()=>renderSpeak(ex));
     el("nextBtn").addEventListener("click", ()=>advance());
   }
+}
+async function startWhisper(ex){
+  try { await startRecording(); }
+  catch(e){ recordBlocked=true; renderSpeak(ex); return; }   // mic denied -> self-check
+  S._recording=true;
+  speakActions("recording", ex);
+  S._recTimer=setTimeout(()=>{ if(S && S._recording) finishWhisper(ex); }, 6000); // auto-stop
+}
+async function finishWhisper(ex){
+  if(!S || !S._recording) return; S._recording=false;
+  if(S._recTimer){ clearTimeout(S._recTimer); S._recTimer=null; }
+  speakActions("scoring", ex);
+  let blob=null; try{ blob=await stopRecording(); }catch(e){}
+  if(!blob || !blob.size){ speakActions("idle",ex); const fb=el("fb"); if(fb){fb.className="feedback mid"; fb.textContent="Didn't catch that — try again";} return; }
+  try { const heard = await transcribe(blob, L().gcode); handleHeard(ex, heard); }
+  catch(e){ speakActions("scorefail", ex); }
 }
 let rec=null;
 function startListening(ex){
