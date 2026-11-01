@@ -5,13 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!--
   Habla — multi-language speaking trainer (Speak-style)
-  Version: v3.2
-  Last Modified: 2026-10-29
+  Version: v3.3
+  Last Modified: 2026-10-31
   Changelog:
-    v3.2 — Igbo audio now plays from bundled pre-generated clips in audio/ig/ (generated once by
-           generate_igbo_audio.py using the local MMS model). No API, no key, no Worker — always
-           works. Retired the Google/HF runtime path (both proved unreliable/deprecated). Clip
-           filenames use a hash that matches the generator. Audio goes live when audio/ig/ is committed.
+    v3.3 — Spanish audio hardened for iOS. iOS can't reliably use the browser speech engine (both
+           Chrome and Safari fail — TTS silent, mic recognition hangs). Now: Spanish "Hear it" uses
+           the native voice where it works (desktop/Android) and falls back to bundled clips in
+           audio/es/ (generate_audio.py) on iOS and voiceless machines. Spanish speaking uses
+           self-check on iOS (no hung mic); real mic scoring stays on desktop Chrome/Android. Added
+           an 8s mic watchdog so a stuck recognizer can't hang. Generator generalized to all langs.
+    v3.2 — Igbo audio now plays from bundled pre-generated clips in audio/ig/ (generate_audio.py,
+           local MMS model). No API/key/Worker. Clip filenames use a hash matching the generator.
     v3.1 — Igbo audio via the habla-tts Cloudflare Worker
            (Google blocks direct browser playback; the Worker fetches it server-side). Hear it / Slow
            now speak Igbo. Updated Igbo note.
@@ -542,25 +546,22 @@ function stopAudio(){ if (curAudio){ try{curAudio.pause();}catch(e){} curAudio=n
 function speak(text, rate=1){
   const lang = L();
   stopAudio();
-  if (lang.tts === "clips"){
-    // Bundled pre-generated audio (see generate_igbo_audio.py). No API — always works.
-    const slow = rate < 0.85;
-    const url = "audio/" + lang.gcode + "/" + clipId(text) + ".wav";
-    try { curAudio = new Audio(url); if (slow) curAudio.playbackRate = 0.6; curAudio.play().catch(()=>{}); } catch(e){}
-    return;
-  }
-  if (!synth) return;
-  const u = new SpeechSynthesisUtterance(text);
-  const v = voiceFor(lang.recLang);
-  u.lang = v ? v.lang : lang.recLang; if (v) u.voice = v; u.rate = rate;
-  synth.speak(u);
+  const slow = rate < 0.85;
+  const playClip = ()=>{ const url = "audio/" + lang.gcode + "/" + clipId(text) + ".wav"; try { curAudio = new Audio(url); if (slow) curAudio.playbackRate = 0.6; curAudio.play().catch(()=>{}); } catch(e){} };
+  if (lang.tts === "clips"){ playClip(); return; }  // Igbo — always bundled
+  // webspeech language (Spanish): native voice where it actually works, else bundled clip.
+  const v = (!IS_IOS && synth) ? voiceFor(lang.recLang) : null;
+  if (v){ const u = new SpeechSynthesisUtterance(text); u.lang = v.lang; u.voice = v; u.rate = rate; synth.speak(u); }
+  else { playClip(); }
 }
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let IN_FRAME = false; try { IN_FRAME = window.self !== window.top; } catch(e){ IN_FRAME = true; }
+/* iOS (incl. iPadOS posing as Mac) can't reliably run the Web Speech API in any browser. */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent || "") || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 let micBlocked = false;
-/* scoring needs: language supports recognition AND the Web Speech API AND we're top-level AND not blocked */
-const canScore = () => L().recog && !!SR && !IN_FRAME && !micBlocked;
+/* scoring needs: language supports recognition, the Web Speech API, top-level, not blocked, not iOS */
+const canScore = () => L().recog && !!SR && !IN_FRAME && !micBlocked && !IS_IOS;
 
 function norm(s){ return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[¿?¡!.,]/g,"").replace(/\s+/g," ").trim(); }
 function wordsOf(s){ return norm(s).split(" ").filter(Boolean); }
@@ -620,7 +621,7 @@ function micNote(){
     return "🔊 Tap Hear it for Igbo audio (bundled, no internet needed). Speaking uses self-check — say it out loud, then rate yourself.";
   return canScore()
     ? "🎙️ Speaking exercises score how close you get. Lessons mix speaking, building sentences, and listening."
-    : "🗣️ Speak exercises use listen → repeat → self-check. Open on your hosted site in Chrome for live mic scoring.";
+    : "🗣️ Speak exercises use listen → repeat → self-check. Live mic scoring works on desktop Chrome or Android (iPhone can't do it reliably).";
 }
 
 function renderReview(){
@@ -773,12 +774,15 @@ function speakActions(mode, ex){
 let rec=null;
 function startListening(ex){
   if (!canScore()) return;
-  const it=ex.item;
+  const clearWatch=()=>{ if(S && S._micTimer){ clearTimeout(S._micTimer); S._micTimer=null; } };
   try {
     rec=new SR(); rec.lang=L().recLang; rec.interimResults=false; rec.maxAlternatives=3;
-    rec.onresult=e=>{ let best=""; for(const alt of e.results[0]) best+=" "+alt.transcript; handleHeard(ex,best.trim()); };
-    rec.onerror=e=>{ if(/not-allowed|service-not-allowed|audio-capture/.test(e.error||"")){ micBlocked=true; renderSpeak(ex); return; } speakActions("idle",ex); const fb=el("fb"); if(fb){fb.className="feedback mid"; fb.textContent="Didn't catch that — try again";} };
+    rec.onresult=e=>{ clearWatch(); let best=""; for(const alt of e.results[0]) best+=" "+alt.transcript; handleHeard(ex,best.trim()); };
+    rec.onerror=e=>{ clearWatch(); if(/not-allowed|service-not-allowed|audio-capture/.test(e.error||"")){ micBlocked=true; renderSpeak(ex); return; } speakActions("idle",ex); const fb=el("fb"); if(fb){fb.className="feedback mid"; fb.textContent="Didn't catch that — try again";} };
+    rec.onend=()=>{ clearWatch(); if(S) S._listening=false; };
     S._listening=true; speakActions("listening",ex); rec.start();
+    // watchdog: if a recognizer hangs (never returns a result or error), recover after 8s.
+    S._micTimer=setTimeout(()=>{ try{rec.stop();}catch(e){} try{rec.abort&&rec.abort();}catch(e){} speakActions("idle",ex); const fb=el("fb"); if(fb){fb.className="feedback mid"; fb.textContent="Didn't catch that — try again";} }, 8000);
   } catch(err){ speakActions("idle",ex); }
 }
 function stopListening(){ if(S) S._listening=false; if(rec){ try{rec.stop();}catch(e){} } }
