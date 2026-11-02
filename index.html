@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!--
   Habla — multi-language speaking trainer (Speak-style)
-  Version: v3.4
-  Last Modified: 2026-10-31
+  Version: v3.5
+  Last Modified: 2026-11-01
   Changelog:
+    v3.5 — iOS audio: request the "playback" audio session so bundled clips (Igbo "Hear it") play
+           even when the iPhone ring/silent switch is on. Set at load and on first interaction.
     v3.4 — Real Spanish mic scoring on iPhone. Records audio (works on iOS, unlike the live Web
            Speech API) and sends it to a Groq Whisper ASR via the habla-asr Cloudflare Worker;
            transcript is scored against the target. Falls back to self-check if the recorder is
@@ -973,6 +975,13 @@ el("langBtn").addEventListener("click", openLangSheet);
   if (saved) document.documentElement.setAttribute("data-theme", saved);
   el("themeBtn").addEventListener("click", ()=>{ const c=document.documentElement.getAttribute("data-theme"); const dark=c?c==="dark":matchMedia("(prefers-color-scheme: dark)").matches; const next=dark?"light":"dark"; document.documentElement.setAttribute("data-theme",next); try{localStorage.setItem("habla.theme",next);}catch(e){} });
 })();
+
+/* iOS silences HTML5 audio when the ring/silent switch is on. Requesting the "playback"
+   audio session (iOS 16.4+) makes clips play through the switch. Set it at load and again on
+   the first interaction (some iOS builds only honor it after a user gesture). */
+function unlockAudioSession(){ try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch(e){} }
+unlockAudioSession();
+["pointerdown","touchend","click"].forEach(ev=> document.addEventListener(ev, unlockAudioSession, { once:true, capture:true }));
 
 rebuildPool();
 render();
